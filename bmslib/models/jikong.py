@@ -632,8 +632,30 @@ class JKBt(BtBms):
             out[name] = raw / factor
         return out
 
+    def get_wire_resistances(self) -> Optional[List[float]]:
+        """Per-cell connector/wire resistance (Ohm), one value per cell, i.e. the
+        same data as esphome-jk-bms's `cell_resistance_1..N` sensors. This is a
+        read-only diagnostic (compensates cell voltage sag under load) - JK does
+        not expose a register to write it, so there is no matching set_* method.
+        Returns None if the settings frame or cell count isn't known yet."""
+        buf_set, _t = self._resp_table.get(0x01, (None, 0))
+        if buf_set is None or self.is_new_11fw_32s is None or not self.num_cells:
+            return None
+        # esphome-jk-bms decode_jk02_settings_(): 24S table starts at byte 158,
+        # 32S table starts at byte 142, both 4 bytes/cell, unsigned, factor 1000.
+        base = 142 if self.is_new_11fw_32s else 158
+        out = []
+        for i in range(self.num_cells):
+            offset = base + i * 4
+            if offset + 4 > len(buf_set):
+                break
+            raw = int.from_bytes(buf_set[offset:offset + 4], byteorder='little', signed=False)
+            out.append(raw / 1000)
+        return out or None
+
     def debug_data(self):
         return dict(resp=self._resp_table, char_w=self.char_handle_write, char_r=self.char_handle_notify)
+
 
 
 async def main():
