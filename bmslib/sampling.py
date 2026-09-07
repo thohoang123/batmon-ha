@@ -18,7 +18,8 @@ from bmslib.bms import DeviceInfo, BmsSample, MIN_VALUE_EXPIRY
 from bmslib.cache.mem import mem_cache_deco
 from bmslib.group import BmsGroup, GroupNotReady
 from bmslib.mqtt_util import publish_sample, is_none_or_nan, publish_cell_voltages, publish_temperatures, publish_hass_discovery, \
-    subscribe_switches, subscribe_set_soc, mqtt_single_out, subscribe_config_numbers, publish_config_numbers
+    subscribe_switches, subscribe_set_soc, mqtt_single_out, subscribe_config_numbers, publish_config_numbers, \
+    publish_wire_resistances
 from bmslib.pwmath import Integrator, DiffAbsSum, LHQ
 from bmslib.util import get_logger, summarize_exc
 
@@ -596,6 +597,8 @@ class BmsSampler:
                 supported_config_numbers = [n for n in (getattr(bms, 'CONFIG_NUMBERS', None) or {})
                                             if getattr(bms, 'supports_config_number', lambda _n: False)(n)]
 
+                wire_resistances = getattr(bms, 'get_wire_resistances', lambda: None)()
+
                 publish_hass_discovery(
                     mqtt_client, device_topic=self.mqtt_topic_prefix,
                     expire_after_seconds=self.expire_after_seconds,
@@ -605,7 +608,12 @@ class BmsSampler:
                     device_info=self.device_info,
                     set_soc=getattr(bms, 'supports_set_soc', lambda: False)(),
                     config_numbers=supported_config_numbers,
+                    wire_resistances=wire_resistances,
                 )
+
+                if wire_resistances:
+                    publish_wire_resistances(mqtt_client, device_topic=self.mqtt_topic_prefix,
+                                             resistances=wire_resistances)
 
                 if supported_config_numbers:
                     current_values = getattr(bms, 'get_config_numbers', lambda: {})()
