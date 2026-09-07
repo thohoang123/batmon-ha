@@ -515,6 +515,123 @@ class JKBt(BtBms):
         await asyncio.sleep(.2)
         self._resp_table.pop(0x01, None)  # settings frame is stale now
 
+    # ---- Generic configuration registers ----------------------------------------
+    # Mirrors syssi/esphome-jk-bms's `number:` platform (components/jk_bms_ble/number/__init__.py),
+    # so every parameter configurable from the ESPHome YAML can be written here too.
+    #
+    # name -> (register_24s, register_32s, factor, length_bytes)
+    # A register of 0x00 means "not supported on this protocol variant" (JK02_24S,
+    # firmware < 11, vs. JK02_32S, firmware >= 11).
+    CONFIG_NUMBERS: Dict[str, Tuple[int, int, float, int]] = {
+        'smart_sleep_voltage': (0x01, 0x01, 1000.0, 1),
+        'cell_voltage_undervoltage_protection': (0x02, 0x02, 1000.0, 4),
+        'cell_voltage_undervoltage_recovery': (0x03, 0x03, 1000.0, 4),
+        'cell_voltage_overvoltage_protection': (0x04, 0x04, 1000.0, 4),
+        'cell_voltage_overvoltage_recovery': (0x05, 0x05, 1000.0, 4),
+        'balance_trigger_voltage': (0x06, 0x06, 1000.0, 4),
+        'cell_soc100_voltage': (0x07, 0x07, 1000.0, 4),
+        'cell_soc0_voltage': (0x08, 0x08, 1000.0, 4),
+        'cell_request_charge_voltage': (0x09, 0x09, 1000.0, 4),
+        'cell_request_float_voltage': (0x0A, 0x0A, 1000.0, 4),
+        'power_off_voltage': (0x0B, 0x0B, 1000.0, 4),
+        'max_charge_current': (0x0C, 0x0C, 1000.0, 4),
+        'charge_overcurrent_protection_delay': (0x0D, 0x0D, 1.0, 4),
+        'charge_overcurrent_protection_recovery_time': (0x0E, 0x0E, 1.0, 4),
+        'max_discharge_current': (0x0F, 0x0F, 1000.0, 4),
+        'discharge_overcurrent_protection_delay': (0x10, 0x10, 1.0, 4),
+        'discharge_overcurrent_protection_recovery_time': (0x11, 0x11, 1.0, 4),
+        'short_circuit_protection_recovery_time': (0x12, 0x12, 1.0, 4),
+        'max_balance_current': (0x13, 0x13, 1000.0, 4),
+        'charge_overtemperature_protection': (0x14, 0x14, 10.0, 4),
+        'charge_overtemperature_protection_recovery': (0x15, 0x15, 10.0, 4),
+        'discharge_overtemperature_protection': (0x16, 0x16, 10.0, 4),
+        'discharge_overtemperature_protection_recovery': (0x17, 0x17, 10.0, 4),
+        'charge_undertemperature_protection': (0x18, 0x18, 10.0, 4),
+        'charge_undertemperature_protection_recovery': (0x19, 0x19, 10.0, 4),
+        'mosfet_overtemperature_protection': (0x1A, 0x1A, 10.0, 4),
+        'mosfet_overtemperature_protection_recovery': (0x1B, 0x1B, 10.0, 4),
+        'cell_count': (0x1C, 0x1C, 1.0, 4),
+        'total_battery_capacity': (0x20, 0x20, 1000.0, 4),
+        'voltage_calibration': (0x21, 0x64, 1000.0, 4),
+        'short_circuit_protection_delay': (0x25, 0x21, 1.0, 4),
+        'balancing_start_voltage': (0x26, 0x22, 1000.0, 4),
+        'current_calibration': (0x24, 0x67, 1000.0, 4),
+        'discharge_precharge_time': (0x00, 0x25, 1.0, 4),
+        'heating_start_temperature': (0x00, 0x37, 1.0, 1),
+        'heating_stop_temperature': (0x00, 0x38, 1.0, 1),
+        'smart_sleep_delay': (0x00, 0x39, 1.0, 1),
+        'discharge_undertemperature_protection': (0x00, 0x3A, 1.0, 1),
+        'discharge_undertemperature_protection_recovery': (0x00, 0x3B, 1.0, 1),
+        'soc_calibration': (0x00, 0x6E, 1.0, 1),
+        'soh_calibration': (0x00, 0x6F, 1.0, 1),
+        'cell_request_charge_voltage_time': (0x00, 0xB3, 10.0, 1),
+        'cell_request_float_voltage_time': (0x00, 0xB4, 10.0, 1),
+        'emergency_duration': (0x00, 0xB5, 1.0, 1),
+        're_bulk_soc': (0x00, 0xB7, 1.0, 1),
+    }
+
+    # Registers <= this are laid out linearly in the 0x01 settings frame at
+    # offset = 6 + (register-1)*4, so their current value can be decoded back out
+    # of it (verified against esphome-jk-bms's decode_jk02_settings_()). Above it,
+    # firmwares reuse that space for other data (per-cell wire resistance tables,
+    # bitmask flags, ...), so those registers can be written but not read back here
+    # - same limitation the ESPHome component has for its "unnamed"/no-state fields.
+    _READBACK_MAX_REGISTER = 0x22
+
+    # Registers whose value can be negative (temperatures below 0 C).
+    _SIGNED_CONFIG_NUMBERS = frozenset((
+        'charge_undertemperature_protection',
+        'charge_undertemperature_protection_recovery',
+    ))
+
+    def _config_register(self, name: str) -> int:
+        reg24, reg32, _factor, _len = self.CONFIG_NUMBERS[name]
+        return reg32 if self.is_new_11fw_32s else reg24
+
+    def supports_config_number(self, name: str) -> bool:
+        if name not in self.CONFIG_NUMBERS or self.is_new_11fw_32s is None:
+            return False
+        return bool(self._config_register(name))
+
+    async def set_config_number(self, name: str, value: float):
+        """Write any parameter in CONFIG_NUMBERS, e.g. set_config_number(
+        'cell_voltage_overvoltage_protection', 3.65). Mirrors the write path of
+        esphome-jk-bms's number platform (JkNumber::control -> write_register)."""
+        if name not in self.CONFIG_NUMBERS:
+            raise KeyError("unknown JK config number %r" % name)
+        reg = self._config_register(name)
+        if not reg:
+            raise NotImplementedError(
+                "%s is not available on this JK protocol variant (%s)" % (
+                    name, "32S/fw>=11" if self.is_new_11fw_32s else "24S/fw<11"))
+        _reg24, _reg32, factor, length = self.CONFIG_NUMBERS[name]
+        raw = int(round(value * factor)) & ((1 << (8 * length)) - 1)  # two's complement
+        payload = list(raw.to_bytes(length, byteorder='little'))
+        await self._write(reg, payload)
+        await asyncio.sleep(.2)  # wait a bit before triggering settings fetch
+        self._resp_table.pop(0x01, None)  # invalidate settings frame which stores it
+
+    def get_config_numbers(self) -> Dict[str, float]:
+        """Best-effort decode of the current value of every CONFIG_NUMBERS entry
+        from the last-seen settings (0x01) frame. Entries whose register is above
+        _READBACK_MAX_REGISTER are write-only (see comment there) and are omitted."""
+        buf_set, _t = self._resp_table.get(0x01, (None, 0))
+        if buf_set is None or self.is_new_11fw_32s is None:
+            return {}
+        out: Dict[str, float] = {}
+        for name in self.CONFIG_NUMBERS:
+            reg = self._config_register(name)
+            if not reg or reg > self._READBACK_MAX_REGISTER:
+                continue
+            _reg24, _reg32, factor, length = self.CONFIG_NUMBERS[name]
+            offset = 6 + (reg - 1) * 4
+            if offset + length > len(buf_set):
+                continue
+            raw = int.from_bytes(buf_set[offset:offset + length], byteorder='little',
+                                 signed=(name in self._SIGNED_CONFIG_NUMBERS))
+            out[name] = raw / factor
+        return out
+
     def debug_data(self):
         return dict(resp=self._resp_table, char_w=self.char_handle_write, char_r=self.char_handle_notify)
 
@@ -567,3 +684,4 @@ class JKBt_32s(JKBt):
 
 if __name__ == '__main__':
     asyncio.run(main())
+
