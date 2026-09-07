@@ -320,9 +320,62 @@ def publish_temperatures(client, device_topic, temperatures):
             mqtt_single_out(client, topic, round_to_n(temperatures[i], 4))
 
 
+# Presentation metadata for BMS config parameters (e.g. bms.CONFIG_NUMBERS keys)
+# exposed as HA `number` entities. Anything not listed here still works, falling
+# back to a plain unitless box.
+CONFIG_NUMBER_META = {
+    'smart_sleep_voltage': dict(unit='V', step=0.001, icon='sleep'),
+    'cell_voltage_undervoltage_protection': dict(unit='V', step=0.001, icon='battery-alert-variant-outline'),
+    'cell_voltage_undervoltage_recovery': dict(unit='V', step=0.001, icon='battery-alert-variant-outline'),
+    'cell_voltage_overvoltage_protection': dict(unit='V', step=0.001, icon='battery-alert-variant-outline'),
+    'cell_voltage_overvoltage_recovery': dict(unit='V', step=0.001, icon='battery-alert-variant-outline'),
+    'balance_trigger_voltage': dict(unit='V', step=0.001, icon='scale-balance'),
+    'cell_soc100_voltage': dict(unit='V', step=0.001),
+    'cell_soc0_voltage': dict(unit='V', step=0.001),
+    'cell_request_charge_voltage': dict(unit='V', step=0.001),
+    'cell_request_float_voltage': dict(unit='V', step=0.001),
+    'cell_request_charge_voltage_time': dict(unit='h', step=0.1),
+    'cell_request_float_voltage_time': dict(unit='h', step=0.1),
+    'power_off_voltage': dict(unit='V', step=0.01),
+    'max_charge_current': dict(unit='A', step=0.1, icon='current-dc'),
+    'max_discharge_current': dict(unit='A', step=0.1, icon='current-dc'),
+    'max_balance_current': dict(unit='A', step=0.1, icon='scale-balance'),
+    'current_calibration': dict(unit='A', step=0.001),
+    'voltage_calibration': dict(unit='V', step=0.01),
+    'charge_overcurrent_protection_delay': dict(unit='s', step=1),
+    'charge_overcurrent_protection_recovery_time': dict(unit='s', step=1),
+    'discharge_overcurrent_protection_delay': dict(unit='s', step=1),
+    'discharge_overcurrent_protection_recovery_time': dict(unit='s', step=1),
+    'short_circuit_protection_delay': dict(unit='us', step=1),
+    'short_circuit_protection_recovery_time': dict(unit='s', step=1),
+    'charge_overtemperature_protection': dict(unit='°C', step=0.1, icon='thermometer-high'),
+    'charge_overtemperature_protection_recovery': dict(unit='°C', step=0.1, icon='thermometer-high'),
+    'discharge_overtemperature_protection': dict(unit='°C', step=0.1, icon='thermometer-high'),
+    'discharge_overtemperature_protection_recovery': dict(unit='°C', step=0.1, icon='thermometer-high'),
+    'charge_undertemperature_protection': dict(unit='°C', step=0.1, icon='thermometer-low', min=-45, max=20),
+    'charge_undertemperature_protection_recovery': dict(unit='°C', step=0.1, icon='thermometer-low', min=-45, max=20),
+    'discharge_undertemperature_protection': dict(unit='°C', step=1, icon='thermometer-low', min=-40, max=100),
+    'discharge_undertemperature_protection_recovery': dict(unit='°C', step=1, icon='thermometer-low', min=-40,
+                                                            max=100),
+    'mosfet_overtemperature_protection': dict(unit='°C', step=0.1, icon='thermometer-high'),
+    'mosfet_overtemperature_protection_recovery': dict(unit='°C', step=0.1, icon='thermometer-high'),
+    'heating_start_temperature': dict(unit='°C', step=1, min=-40, max=100),
+    'heating_stop_temperature': dict(unit='°C', step=1, min=-40, max=100),
+    'cell_count': dict(unit='', step=1, min=2, max=32),
+    'total_battery_capacity': dict(unit='Ah', step=1, min=2, max=20000, icon='battery-outline'),
+    'balancing_start_voltage': dict(unit='V', step=0.01, icon='scale-balance'),
+    'discharge_precharge_time': dict(unit='s', step=1),
+    'smart_sleep_delay': dict(unit='h', step=1, min=1, max=100),
+    'emergency_duration': dict(unit='min', step=1, min=1, max=255),
+    'soc_calibration': dict(unit='%', step=1, min=0, max=100, icon='battery-sync'),
+    'soh_calibration': dict(unit='%', step=1, min=0, max=100, icon='heart-pulse'),
+    're_bulk_soc': dict(unit='%', step=1, min=0, max=50),
+}
+
+
 def publish_hass_discovery(client, device_topic, expire_after_seconds: int, sample: BmsSample, num_cells,
                            temperatures,
-                           device_info: DeviceInfo = None, set_soc=False):
+                           device_info: DeviceInfo = None, set_soc=False, config_numbers=None):
     discovery_msg = {}
 
     # HA discovery node_id must match [a-zA-Z0-9_-] (no slashes), so flatten
@@ -508,6 +561,32 @@ def publish_hass_discovery(client, device_topic, expire_after_seconds: int, samp
             "device": device_json,
         }
 
+    if config_numbers:
+        # Full BMS configuration parameters (protection thresholds, currents,
+        # capacity, ...), mirroring the ESPHome `number:` platform. State follows
+        # whatever bms.get_config_numbers() last decoded (see publish_config_numbers);
+        # entries the BMS driver can't read back simply won't have a state until
+        # the topic is published, same as any other HA number without a known value.
+        for name in config_numbers:
+            meta = CONFIG_NUMBER_META.get(name, {})
+            dm = {
+                "unique_id": f"{device_topic}__cfg_{name}",
+                "name": capitalize_words(name.replace('_', ' ')),
+                "entity_category": "config",
+                "unit_of_measurement": meta.get('unit', ''),
+                "min": meta.get('min', 0),
+                "max": meta.get('max', 1000),
+                "step": meta.get('step', 1),
+                "mode": "box",
+                "state_topic": f"{device_topic}/settings/{name}",
+                "command_topic": f"homeassistant/number/{node_id}/cfg_{name}/set",
+                "device": device_json,
+            }
+            if meta.get('icon'):
+                dm['icon'] = 'mdi:' + meta['icon']
+            remove_none_values(dm)
+            discovery_msg[f"homeassistant/number/{node_id}/cfg_{name}/config"] = dm
+
     for topic, data in discovery_msg.items():
         j = json.dumps(data)
         logger.debug('discovery msg %s: %s', topic, j)
@@ -559,6 +638,31 @@ def subscribe_set_soc(mqtt_client: paho.Client, device_topic, bms: BtBms):
     _switch_callbacks[topic] = set_soc
 
 
+def publish_config_numbers(client, device_topic, values: dict):
+    """Publish the current value of each decoded BMS config number so its HA
+    `number` entity has a state (mirrors set_soc's state topic pattern)."""
+    for name, value in values.items():
+        mqtt_single_out(client, f"{device_topic}/settings/{name}", str(value))
+
+
+def subscribe_config_numbers(mqtt_client: paho.Client, device_topic, bms: BtBms, names):
+    """Wire up the command topics for bms.set_config_number(), i.e. the full
+    configuration parameters (protection thresholds, currents, capacity, ...),
+    the same way subscribe_set_soc() does for the single SOC-calibration number."""
+    async def set_number(name: str, payload: str):
+        value = float(payload)
+        logger.info('Set %s config %s -> %s', bms.name, name, value)
+        await bms.set_config_number(name, value)
+        mqtt_single_out(mqtt_client, f"{device_topic}/settings/{name}", str(value))
+
+    node_id = device_topic.replace('/', '_')
+    for name in names:
+        topic = f"homeassistant/number/{node_id}/cfg_{name}/set"
+        logger.debug("subscribe %s", topic)
+        mqtt_client.subscribe(topic, qos=2)
+        _switch_callbacks[topic] = lambda payload, n=name: set_number(n, payload)
+
+
 def mqtt_message_handler(client, userdata, message: paho.MQTTMessage):
     payload = message.payload.decode("utf-8")
     logger.info("received msg %s: %s", message.topic, payload)
@@ -582,3 +686,4 @@ def paho_monkey_patch():
     paho.Client._handle_pingresp = _handle_pingresp
 
     logger.debug("applied paho monkey patch _handle_pingresp")
+
