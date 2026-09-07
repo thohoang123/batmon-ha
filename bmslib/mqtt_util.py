@@ -320,6 +320,15 @@ def publish_temperatures(client, device_topic, temperatures):
             mqtt_single_out(client, topic, round_to_n(temperatures[i], 4))
 
 
+def publish_wire_resistances(client, device_topic, resistances):
+    """Per-cell connector/wire resistance in Ohm (esphome-jk-bms's cell_resistance_N)."""
+    if not resistances:
+        return
+    for i in range(0, len(resistances)):
+        topic = f"{device_topic}/wire_resistances/{i + 1}"
+        mqtt_single_out(client, topic, round_to_n(resistances[i], 4))
+
+
 # Presentation metadata for BMS config parameters (e.g. bms.CONFIG_NUMBERS keys)
 # exposed as HA `number` entities. Anything not listed here still works, falling
 # back to a plain unitless box.
@@ -375,7 +384,8 @@ CONFIG_NUMBER_META = {
 
 def publish_hass_discovery(client, device_topic, expire_after_seconds: int, sample: BmsSample, num_cells,
                            temperatures,
-                           device_info: DeviceInfo = None, set_soc=False, config_numbers=None):
+                           device_info: DeviceInfo = None, set_soc=False, config_numbers=None,
+                           wire_resistances=None):
     discovery_msg = {}
 
     # HA discovery node_id must match [a-zA-Z0-9_-] (no slashes), so flatten
@@ -443,6 +453,12 @@ def publish_hass_discovery(client, device_topic, expire_after_seconds: int, samp
         k = 'temperatures/%d' % (i + 1)
         if not is_none_or_nan(temperatures[i]):
             _hass_discovery(k, "temperature", state_class="measurement", unit="°C", precision=1)
+
+    for i in range(0, len(wire_resistances or [])):
+        k = 'wire_resistances/%d' % (i + 1)
+        if not is_none_or_nan(wire_resistances[i]):
+            _hass_discovery(k, None, state_class="measurement", unit="Ω", icon="omega",
+                            name='Wire Resistance %d' % (i + 1), precision=3)
 
     meters = {
         # state_class see https://developers.home-assistant.io/docs/core/entity/sensor/#long-term-statistics
