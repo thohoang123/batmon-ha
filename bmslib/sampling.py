@@ -580,6 +580,16 @@ class BmsSampler:
                 publish_temperatures(mqtt_client, device_topic=self.mqtt_topic_prefix,
                                      temperatures=sample.temperatures)
 
+                # Same "publish every cycle" reasoning as temperatures above: this
+                # is a pure local decode of the already-cached settings frame (no
+                # extra BLE traffic), and publishing it only every ~60 samples (the
+                # period_discov cadence) left it expiring (expire_values_after)
+                # between publishes, so the HA entity sat at "Unavailable".
+                wire_resistances = getattr(bms, 'get_wire_resistances', lambda: None)()
+                if wire_resistances:
+                    publish_wire_resistances(mqtt_client, device_topic=self.mqtt_topic_prefix,
+                                             resistances=wire_resistances)
+
                 if log_data and (voltages or sample.temperatures) and not bms.is_virtual:
                     logger.info('%s volt=[%s] temp=%s', bms.name,
                                 ','.join(map(str, voltages)) if voltages else voltages,
@@ -597,8 +607,6 @@ class BmsSampler:
                 supported_config_numbers = [n for n in (getattr(bms, 'CONFIG_NUMBERS', None) or {})
                                             if getattr(bms, 'supports_config_number', lambda _n: False)(n)]
 
-                wire_resistances = getattr(bms, 'get_wire_resistances', lambda: None)()
-
                 publish_hass_discovery(
                     mqtt_client, device_topic=self.mqtt_topic_prefix,
                     expire_after_seconds=self.expire_after_seconds,
@@ -610,10 +618,6 @@ class BmsSampler:
                     config_numbers=supported_config_numbers,
                     wire_resistances=wire_resistances,
                 )
-
-                if wire_resistances:
-                    publish_wire_resistances(mqtt_client, device_topic=self.mqtt_topic_prefix,
-                                             resistances=wire_resistances)
 
                 if supported_config_numbers:
                     current_values = getattr(bms, 'get_config_numbers', lambda: {})()
