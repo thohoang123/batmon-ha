@@ -18,7 +18,7 @@ from bmslib.bms import DeviceInfo, BmsSample, MIN_VALUE_EXPIRY
 from bmslib.cache.mem import mem_cache_deco
 from bmslib.group import BmsGroup, GroupNotReady
 from bmslib.mqtt_util import publish_sample, is_none_or_nan, publish_cell_voltages, publish_temperatures, publish_hass_discovery, \
-    subscribe_switches, subscribe_set_soc, mqtt_single_out
+    subscribe_switches, subscribe_set_soc, mqtt_single_out, subscribe_config_numbers, publish_config_numbers
 from bmslib.pwmath import Integrator, DiffAbsSum, LHQ
 from bmslib.util import get_logger, summarize_exc
 
@@ -490,6 +490,15 @@ class BmsSampler:
             if self.num_samples == 0 and mqtt_client and getattr(bms, 'supports_set_soc', lambda: False)():
                 subscribe_set_soc(mqtt_client, device_topic=self.mqtt_topic_prefix, bms=bms)
 
+            config_numbers_fn = getattr(bms, 'CONFIG_NUMBERS', None)
+            if self.num_samples == 0 and mqtt_client and config_numbers_fn:
+                supported_config_numbers = [n for n in config_numbers_fn
+                                            if getattr(bms, 'supports_config_number', lambda _n: False)(n)]
+                if supported_config_numbers:
+                    logger.info("%s subscribing for %d config numbers", bms.name, len(supported_config_numbers))
+                    subscribe_config_numbers(mqtt_client, device_topic=self.mqtt_topic_prefix, bms=bms,
+                                             names=supported_config_numbers)
+
             for sink in self.sinks:
                 try:
                     sink.publish_sample(bms.name, sample)
@@ -583,6 +592,10 @@ class BmsSampler:
                 logger.debug("Sending HA discovery for %s (num_samples=%d)", bms.name, self.num_samples)
                 if self.device_info is None:
                     await self._try_fetch_device_info()
+
+                supported_config_numbers = [n for n in (getattr(bms, 'CONFIG_NUMBERS', None) or {})
+                                            if getattr(bms, 'supports_config_number', lambda _n: False)(n)]
+
                 publish_hass_discovery(
                     mqtt_client, device_topic=self.mqtt_topic_prefix,
                     expire_after_seconds=self.expire_after_seconds,
@@ -591,7 +604,14 @@ class BmsSampler:
                     temperatures=sample.temperatures,
                     device_info=self.device_info,
                     set_soc=getattr(bms, 'supports_set_soc', lambda: False)(),
+                    config_numbers=supported_config_numbers,
                 )
+
+                if supported_config_numbers:
+                    current_values = getattr(bms, 'get_config_numbers', lambda: {})()
+                    if current_values:
+                        publish_config_numbers(mqtt_client, device_topic=self.mqtt_topic_prefix,
+                                               values=current_values)
 
                 # publish sample again after discovery
                 if self.period_pub.period > 2:
@@ -737,3 +757,4 @@ async def fetch_loop(fn, period, max_errors, should_stop=None, max_backoff=60):
             # clamp the exponent: 1.1 ** 7448 raises OverflowError and kills the loop
             await asyncio.sleep(min(1.1 ** min(num_errors_row, 100), max_backoff))
         await asyncio.sleep(period)
+
