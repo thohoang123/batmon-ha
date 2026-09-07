@@ -648,9 +648,10 @@ class JKBt(BtBms):
         if buf is None or self.is_new_11fw_32s is None:
             return None
         # esphome-jk-bms decode_jk02_cell_info_(): resistance table starts at
-        # byte 64 (+32 more on 32S/fw>=11 firmware, same offset used for every
-        # other field in that frame), 2 bytes/cell, unsigned, factor 0.001.
-        base = 64 + (32 if self.is_new_11fw_32s else 0)
+        # byte 64 (+16 more on 32S/fw>=11 firmware - NOT +32, that constant is
+        # for a different frame; confirmed against upstream source), 2 bytes
+        # per cell, unsigned, factor 0.001.
+        base = 64 + (16 if self.is_new_11fw_32s else 0)
         out = []
         for i in range(self.num_cells):
             offset = base + i * 2
