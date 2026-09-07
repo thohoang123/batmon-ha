@@ -633,23 +633,30 @@ class JKBt(BtBms):
         return out
 
     def get_wire_resistances(self) -> Optional[List[float]]:
-        """Per-cell connector/wire resistance (Ohm), one value per cell, i.e. the
-        same data as esphome-jk-bms's `cell_resistance_1..N` sensors. This is a
-        read-only diagnostic (compensates cell voltage sag under load) - JK does
-        not expose a register to write it, so there is no matching set_* method.
-        Returns None if the settings frame or cell count isn't known yet."""
-        buf_set, _t = self._resp_table.get(0x01, (None, 0))
-        if buf_set is None or self.is_new_11fw_32s is None or not self.num_cells:
+        """Per-cell internal resistance (Ohm), one value per cell - this is what
+        esphome-jk-bms's `cell_resistance_1..N` sensors actually show, decoded
+        live from the periodic cell-info (0x02) frame (same frame cell voltages
+        come from). Read-only, updates every sample.
+
+        Not to be confused with the settings-frame "connector wire resistance"
+        *calibration* registers (0x01 frame): those are a manual compensation
+        value the vendor app writes after a one-key calibration procedure and
+        otherwise sit at 0 - a different field with a similar name."""
+        if not self.num_cells:
             return None
-        # esphome-jk-bms decode_jk02_settings_(): 24S table starts at byte 158,
-        # 32S table starts at byte 142, both 4 bytes/cell, unsigned, factor 1000.
-        base = 142 if self.is_new_11fw_32s else 158
+        buf, _t = self._resp_table.get(0x02, (None, 0))
+        if buf is None or self.is_new_11fw_32s is None:
+            return None
+        # esphome-jk-bms decode_jk02_cell_info_(): resistance table starts at
+        # byte 64 (+32 more on 32S/fw>=11 firmware, same offset used for every
+        # other field in that frame), 2 bytes/cell, unsigned, factor 0.001.
+        base = 64 + (32 if self.is_new_11fw_32s else 0)
         out = []
         for i in range(self.num_cells):
-            offset = base + i * 4
-            if offset + 4 > len(buf_set):
+            offset = base + i * 2
+            if offset + 2 > len(buf):
                 break
-            raw = int.from_bytes(buf_set[offset:offset + 4], byteorder='little', signed=False)
+            raw = int.from_bytes(buf[offset:offset + 2], byteorder='little', signed=False)
             out.append(raw / 1000)
         return out or None
 
